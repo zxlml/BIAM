@@ -9,6 +9,8 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-63%20passed-brightgreen)](#-testing)
 
+**English** | [简体中文](./README_zh.md)
+
 </div>
 
 ---
