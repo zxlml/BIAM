@@ -1,6 +1,6 @@
 """
 BIAM Model
-Main model class that integrates additive model and weighting network
+主模型类：集成加性模型与加权网络
 """
 
 import torch
@@ -8,6 +8,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, Tuple
 import numpy as np
+
+# 正确导入两个子模块（原代码缺失导致 NameError）
+from models.biam_additive_model import BIAMAdditiveModel
+from models.biam_weighting_network import BIAMWeightingNetwork
 
 class BIAMModel(nn.Module):
     """
@@ -37,70 +41,32 @@ class BIAMModel(nn.Module):
         # Move to device
         self.to(device)
     
-    def forward(self, x, return_weights=False):
+    def forward(self, x):
         """
-        Forward pass through BIAM model
-        
-        Args:
-            x: Input features
-            return_weights: Whether to return sample weights
-            
-        Returns:
-            Model predictions and optionally weights
+        前向传播：只返回加性模型的预测
+        （样本权重由双层优化器在训练时调用 weighting network 计算）
         """
-        # Get predictions from additive model
         predictions = self.additive_model(x)
-        
-        if return_weights:
-            # Calculate sample weights using weighting network
-            with torch.no_grad():
-                # Use prediction confidence as input to weighting network
-                if self.task == 'regression':
-                    # For regression, use prediction variance as uncertainty measure
-                    prediction_uncertainty = torch.var(predictions, dim=1, keepdim=True)
-                else:
-                    # For classification, use prediction confidence
-                    prediction_uncertainty = F.softmax(predictions, dim=1).max(dim=1, keepdim=True)[0]
-                
-                weights = self.weighting_network(prediction_uncertainty)
-            
-            return predictions, weights
-        else:
-            return predictions
+        return predictions
     
     def get_feature_importance(self):
         """
         Get feature importance from additive model
-        
-        Returns:
-            Feature importance scores
         """
         return self.additive_model.get_feature_importance()
     
     def get_missing_indicators(self):
         """
         Get missing value indicators
-        
-        Returns:
-            Missing value indicators
         """
         return self.additive_model.get_missing_indicators()
     
     def predict_with_uncertainty(self, x, n_samples=100):
         """
-        Make predictions with uncertainty estimation
-        
-        Args:
-            x: Input features
-            n_samples: Number of Monte Carlo samples
-            
-        Returns:
-            Mean predictions and uncertainty estimates
+        通过对输入加小扰动做 Monte Carlo 估计预测不确定性（NaN 安全）
         """
         predictions = []
-        
         for _ in range(n_samples):
-            # Add small noise for uncertainty estimation
             x_noisy = x + torch.randn_like(x) * 0.01
             pred = self.forward(x_noisy)
             predictions.append(pred)
@@ -108,5 +74,4 @@ class BIAMModel(nn.Module):
         predictions = torch.stack(predictions, dim=0)
         mean_pred = predictions.mean(dim=0)
         std_pred = predictions.std(dim=0)
-        
         return mean_pred, std_pred

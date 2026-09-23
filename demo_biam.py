@@ -54,12 +54,15 @@ def demo_biam_classification():
     # Generate data
     print("\nGenerating synthetic classification data...")
     generator = BIAMDataGenerator(config)
-    train_loader, val_loader, test_data = generator.generate_data()
+    train_loader, val_loader, train_data, val_data, test_data = generator.generate_data()
     
     # Initialize model
     print("Initializing BIAM model...")
     biam_model = BIAMModel(config, device)
     weighting_network = BIAMWeightingNetwork(config, device)
+    
+    # 用训练数据分位数设置 hinge 节点
+    biam_model.additive_model.set_knots(torch.tensor(train_data[0], dtype=torch.float32))
     
     # Log model info
     logger.log_model_info(biam_model)
@@ -157,12 +160,15 @@ def demo_biam_regression():
     # Generate data
     print("\nGenerating synthetic regression data...")
     generator = BIAMDataGenerator(config)
-    train_loader, val_loader, test_data = generator.generate_data()
+    train_loader, val_loader, train_data, val_data, test_data = generator.generate_data()
     
     # Initialize model
     print("Initializing BIAM model...")
     biam_model = BIAMModel(config, device)
     weighting_network = BIAMWeightingNetwork(config, device)
+    
+    # 用训练数据分位数设置 hinge 节点
+    biam_model.additive_model.set_knots(torch.tensor(train_data[0], dtype=torch.float32))
     
     # Initialize optimizer
     optimizer = BIAMOptimizer(config, biam_model, weighting_network)

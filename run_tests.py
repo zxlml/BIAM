@@ -36,8 +36,8 @@ def run_performance_tests():
         # Run performance tests
         result = subprocess.run([
             sys.executable, '-m', 'pytest', 
-            'tests/test_biam_performance.py', 
-            '-v', '--benchmark-only'
+            'tests/test_biam_performance.py',
+            '-v'
         ], capture_output=True, text=True)
         
         print(result.stdout)

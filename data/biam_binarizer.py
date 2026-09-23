@@ -15,7 +15,7 @@ class BIAMBinarizer:
     def __init__(self, 
                  quantiles: List[float] = [0.2, 0.4, 0.6, 0.8],
                  label: str = 'label',
-                 miss_vals: List[Any] = [-7, -8, -9, np.NaN],
+                 miss_vals: List[Any] = [-7, -8, -9, np.nan],
                  overall_mi_intercept: bool = False,
                  overall_mi_ixn: bool = False,
                  specific_mi_intercept: bool = True,

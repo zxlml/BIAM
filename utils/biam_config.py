@@ -27,10 +27,40 @@ class BIAMConfig:
         self.upper_lr = 1e-2
         self.lower_lr = 1e-2
         self.penalty_coef = 1e-5
-        self.epochs = 10000
+        self.epochs = 200
         self.batch_size = 200
         self.use_wandb = False
         self.project_name = 'biam-experiments'
+        
+        # 随机种子（保证仿真可复现）
+        self.seed = 42
+        
+        # 数据规模参数（论文 §4.1）
+        self.n_samples = 1200
+        self.n_features = 10
+        
+        # 回归标签噪声参数：ε ~ N(μe, σe)（论文 Eq.16 相关设定）
+        self.noise_mean = 1.0   # μe
+        self.noise_std = 0.5    # σe
+        
+        # 缺失机制：MCAR / MAR / MNAR（论文 §4.1）
+        self.missing_mechanism = 'MCAR'
+        
+        # 加性模型 hinge 基节点数 L（节点取训练数据分位数）
+        self.n_knots = 8
+        
+        # 正则系数：λ1(ℓ2) 与 λ2(ℓ0)，对应论文 Eq.2 中的 λ1‖w‖₂² + λ2‖w‖₀
+        self.lambda_l2 = 1e-3
+        self.lambda_l0 = 1e-4
+        
+        # 基函数类型：'piecewise_linear'（hinge, 论文默认）或 'piecewise_constant'（BIAM-H 消融）
+        self.basis_type = 'piecewise_linear'
+        
+        # 是否启用缺失交互项 Σ α_{j,k,τ} I(m_j=1) h(x_k;η_τ)（BIAM-I 消融时置 False）
+        self.use_missing_interactions = True
+        
+        # 是否启用双层优化（BIAM-B 消融时置 False，退化为固定均匀样本权重）
+        self.use_bilevel = True
         
         # Model architecture parameters
         self.input_dim = 100
@@ -74,30 +104,10 @@ class BIAMConfig:
         Args:
             args: Command line arguments
         """
-        if hasattr(args, 'task'):
-            self.task = args.task
-        if hasattr(args, 'dataset'):
-            self.dataset = args.dataset
-        if hasattr(args, 'missing_ratio'):
-            self.missing_ratio = args.missing_ratio
-        if hasattr(args, 'noise_ratio'):
-            self.noise_ratio = args.noise_ratio
-        if hasattr(args, 'imbalance_ratio'):
-            self.imbalance_ratio = args.imbalance_ratio
-        if hasattr(args, 'upper_lr'):
-            self.upper_lr = args.upper_lr
-        if hasattr(args, 'lower_lr'):
-            self.lower_lr = args.lower_lr
-        if hasattr(args, 'penalty_coef'):
-            self.penalty_coef = args.penalty_coef
-        if hasattr(args, 'epochs'):
-            self.epochs = args.epochs
-        if hasattr(args, 'batch_size'):
-            self.batch_size = args.batch_size
-        if hasattr(args, 'use_wandb'):
-            self.use_wandb = args.use_wandb
-        if hasattr(args, 'project_name'):
-            self.project_name = args.project_name
+        # 通用更新：只要 args 中存在同名属性且 config 已定义，就同步
+        for key, value in vars(args).items():
+            if hasattr(self, key) and key not in ('device',):
+                setattr(self, key, value)
     
     def get_spline_dim(self):
         """
@@ -176,6 +186,12 @@ class BIAMConfig:
         
         if not 0 <= self.imbalance_ratio <= 1:
             raise ValueError("Imbalance ratio must be between 0 and 1")
+        
+        if self.missing_mechanism not in ['MCAR', 'MAR', 'MNAR']:
+            raise ValueError(f"Invalid missing mechanism: {self.missing_mechanism}")
+        
+        if self.basis_type not in ['piecewise_linear', 'piecewise_constant']:
+            raise ValueError(f"Invalid basis type: {self.basis_type}")
     
     def __str__(self):
         """

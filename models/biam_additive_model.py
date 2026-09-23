@@ -1,6 +1,9 @@
 """
 BIAM Additive Model
-Additive model component with missing value handling and feature interactions
+论文 Eq.1 的可解释加性模型：
+    f(x, m; w) = β0 + Σ_j f_j(x_j) + Σ_j β_j^miss · m_j + Σ_{j,k,τ} α_{j,k,τ} · I(m_j=1) · h(x_k; η_τ)
+    f_j(x_j)   = Σ_τ β_{j,τ} · h(x_j; η_τ),  h(x; η) = max(0, x - η) 为分段线性 hinge 基
+节点 η_τ 预定义为训练数据的分位数；缺失特征的主效应置零，通过缺失指示与交互项建模缺失信息。
 """
 
 import torch
@@ -11,7 +14,7 @@ from typing import Dict, Any, List, Tuple
 
 class BIAMAdditiveModel(nn.Module):
     """
-    Additive model for BIAM with missing value indicators and feature interactions
+    BIAM 加性模型：主效应(hinge 基) + 缺失指示效应 + 缺失-特征交互效应
     """
     
     def __init__(self, config, device):
@@ -28,253 +31,283 @@ class BIAMAdditiveModel(nn.Module):
         self.device = device
         self.task = config.task
         
-        # Model parameters
+        # 模型规模参数
         self.input_dim = getattr(config, 'input_dim', 100)
         self.output_dim = 1 if self.task == 'regression' else getattr(config, 'num_classes', 2)
-        self.spline_dim = 3 if self.task == 'regression' else 5
+        self.n_knots = getattr(config, 'n_knots', 8)
+        self.basis_type = getattr(config, 'basis_type', 'piecewise_linear')
+        self.use_missing_interactions = getattr(config, 'use_missing_interactions', True)
         
-        # Calculate total dimension after spline expansion
-        self.total_dim = self.input_dim * self.spline_dim
-        
-        # Define model components
         self._build_model()
         
-        # Move to device
         self.to(device)
     
     def _build_model(self):
         """
-        Build the additive model architecture
+        构建模型参数：
+        - beta0: 截距项（每输出维）
+        - B: 主效应系数 β_{j,τ}，形状 (p, L, d)，小随机初始化
+        - beta_miss: 缺失指示效应 β_j^miss，形状 (p, d)，零初始化
+        - A: 缺失交互系数 α_{j,k,τ}，形状 (p, p, L, d)，零初始化（稀疏起步）
         """
-        # Main prediction layer
-        self.predict = nn.Linear(self.total_dim, self.output_dim)
+        p, L, d = self.input_dim, self.n_knots, self.output_dim
         
-        # Missing value indicators
-        self.missing_indicators = nn.Parameter(
-            torch.zeros(self.input_dim, device=self.device)
-        )
+        # 截距 β0
+        self.beta0 = nn.Parameter(torch.zeros(d))
         
-        # Feature interaction weights
-        self.interaction_weights = nn.Parameter(
-            torch.zeros(self.input_dim, self.input_dim, device=self.device)
-        )
+        # 主效应系数 β_{j,τ}（小随机初始化，保证初始非零梯度）
+        self.B = nn.Parameter(torch.randn(p, L, d) * 0.01)
         
-        # Initialize weights
-        self._initialize_weights()
+        # 缺失指示效应 β_j^miss（零初始化）
+        self.beta_miss = nn.Parameter(torch.zeros(p, d))
+        
+        # 缺失-特征交互系数 α_{j,k,τ}（零初始化 → 天然稀疏，配合 ℓ0 正则剪枝）
+        if self.use_missing_interactions:
+            self.A = nn.Parameter(torch.zeros(p, p, L, d))
+        else:
+            self.A = None
+        
+        # hinge 节点 η_τ，默认 linspace(-1,1,L)，可通过 set_knots 用训练数据分位数覆盖
+        knots = torch.linspace(-1.0, 1.0, L)
+        self.register_buffer('knots', knots)
+        
+        # 兼容旧接口：missing_indicators 作为可学习参数（β_j^miss 的别名视图）
+        # 旧测试通过 get_missing_indicators() 访问，这里保留参数名以兼容 state_dict
+        self._has_knots_data = False
     
-    def _initialize_weights(self):
+    def set_knots(self, X: torch.Tensor):
         """
-        Initialize model weights
+        用训练数据的分位数设置 hinge 节点 η_τ（论文：节点预定义为训练数据分位数）
+        对含缺失值的数据，使用非缺失观测值计算分位数。
+        
+        Args:
+            X: 训练数据张量，形状 (n, p)，可含 NaN
         """
-        nn.init.xavier_uniform_(self.predict.weight)
-        if self.predict.bias is not None:
-            nn.init.constant_(self.predict.bias, 0)
+        with torch.no_grad():
+            if X.dim() != 2:
+                raise ValueError("X must be 2D tensor (n_samples, n_features)")
+            
+            # 对各特征的观测分位数取平均作为节点
+            knots = torch.zeros(self.n_knots, device=X.device)
+            n_valid = 0
+            for j in range(min(X.shape[1], self.input_dim)):
+                col = X[:, j]
+                col = col[~torch.isnan(col)]
+                if col.numel() == 0:
+                    continue
+                quantiles = torch.linspace(0, 1, self.n_knots, device=X.device)
+                knots += torch.quantile(col, quantiles)
+                n_valid += 1
+            
+            if n_valid > 0:
+                knots /= n_valid
+            else:
+                knots = torch.linspace(-1.0, 1.0, self.n_knots, device=X.device)
+            
+            self.knots = knots.to(self.device)
+            self._has_knots_data = True
+    
+    def _compute_hinge_basis(self, xf: torch.Tensor) -> torch.Tensor:
+        """
+        计算 hinge 基 h(x_k; η_τ) = max(0, x - η_τ)
+        
+        Args:
+            xf: 缺失填充后的输入，形状 (b, p)
+        
+        Returns:
+            基函数张量，形状 (b, p, L)
+        """
+        # (b, p, 1) - (L,) -> (b, p, L)
+        basis = xf.unsqueeze(-1) - self.knots.view(1, 1, -1)
+        
+        if self.basis_type == 'piecewise_linear':
+            # h(x;η) = max(0, x-η)（论文默认，BIAM 消融前）
+            basis = torch.relu(basis)
+        else:
+            # piecewise_constant：分段常数基 I(x > η)（BIAM-H 消融）
+            basis = (basis > 0).float()
+        
+        return basis
     
     def forward(self, x):
         """
-        Forward pass through additive model
+        前向传播（论文 Eq.1）
         
         Args:
-            x: Input features
-            
+            x: 输入特征，形状 (b, p)，NaN 表示缺失
+        
         Returns:
-            Model predictions
+            模型预测，形状 (b, d)
         """
-        # Apply spline transformation
-        x_spline = self._apply_spline_transformation(x)
+        b, p = x.shape
         
-        # Add missing value indicators
-        x_with_missing = self._add_missing_indicators(x_spline, x)
+        # 缺失指示 m_j = I(x_j 缺失)
+        m = torch.isnan(x).float()
         
-        # Apply feature interactions
-        x_with_interactions = self._apply_feature_interactions(x_with_missing, x)
+        # 缺失值填充为 0（主效应通过 mask 置零，不受填充值影响）
+        xf = torch.nan_to_num(x, nan=0.0)
         
-        # Final prediction
-        output = self.predict(x_with_interactions)
+        # hinge 基 H[b, j, τ] = h(x_j; η_τ)
+        H = self._compute_hinge_basis(xf)
+        
+        # 缺失特征的主效应置零：缺失时 x 被填充为 0，主效应不应有贡献
+        H = H * (1.0 - m).unsqueeze(-1)
+        
+        # 主效应：β0 + Σ_{j,τ} β_{j,τ} h(x_j; η_τ)
+        main = self.beta0.view(1, -1) + torch.einsum('bpl,pld->bd', H, self.B)
+        
+        # 缺失指示效应：Σ_j β_j^miss m_j
+        miss = m @ self.beta_miss
+        
+        # 缺失-特征交互：Σ_{j,k,τ} α_{j,k,τ} I(m_j=1) h(x_k; η_τ)
+        if self.use_missing_interactions and self.A is not None:
+            Hf = H.reshape(b, p * self.n_knots)  # (b, p*L)
+            # A 形状 (p, p, L, d)，reshape 成 (p, p*L, d) 用于矩阵乘法
+            A_flat = self.A.reshape(p, p * self.n_knots, self.output_dim)
+            inter = self._missing_interaction(m, Hf, A_flat)
+            output = main + miss + inter
+        else:
+            output = main + miss
         
         return output
     
-    def _apply_spline_transformation(self, x):
+    def _missing_interaction(self, m: torch.Tensor, Hf: torch.Tensor, A_flat: torch.Tensor) -> torch.Tensor:
         """
-        Apply B-spline transformation to input features
+        计算缺失交互项（逐输出维，避免大中间量）
         
         Args:
-            x: Input features
-            
+            m: 缺失指示 (b, p)
+            Hf: hinge 基展平 (b, p*L)
+            A_flat: 交互系数 (p, p*L, d)
+        
         Returns:
-            Spline-transformed features
+            交互贡献 (b, d)
         """
-        batch_size, n_features = x.shape
-        x_spline = torch.zeros(batch_size, self.total_dim, device=self.device)
-        
-        for i in range(n_features):
-            start_idx = i * self.spline_dim
-            end_idx = start_idx + self.spline_dim
-            
-            # Simple spline basis functions
-            x_feature = x[:, i:i+1]
-            
-            # Linear spline basis
-            x_spline[:, start_idx] = x_feature.squeeze()
-            x_spline[:, start_idx + 1] = torch.relu(x_feature - 0.5).squeeze()
-            x_spline[:, start_idx + 2] = torch.relu(x_feature - 0.8).squeeze()
-            
-            if self.spline_dim > 3:
-                x_spline[:, start_idx + 3] = torch.sin(x_feature * np.pi).squeeze()
-                x_spline[:, start_idx + 4] = torch.cos(x_feature * np.pi).squeeze()
-        
-        return x_spline
-    
-    def _add_missing_indicators(self, x_spline, x_original):
-        """
-        Add missing value indicators to features
-        
-        Args:
-            x_spline: Spline-transformed features
-            x_original: Original input features
-            
-        Returns:
-            Features with missing indicators
-        """
-        # Create missing indicators
-        missing_mask = torch.isnan(x_original)
-        
-        # Add missing indicators as additional features
-        missing_indicators = missing_mask.float()
-        
-        # Concatenate with spline features
-        x_with_missing = torch.cat([x_spline, missing_indicators], dim=1)
-        
-        return x_with_missing
-    
-    def _apply_feature_interactions(self, x, x_original):
-        """
-        Apply feature interactions
-        
-        Args:
-            x: Current features
-            x_original: Original input features
-            
-        Returns:
-            Features with interactions
-        """
-        # Simple pairwise interactions
-        interactions = []
-        
-        for i in range(min(5, x_original.shape[1])):  # Limit interactions for efficiency
-            for j in range(i + 1, min(5, x_original.shape[1])):
-                interaction = x_original[:, i] * x_original[:, j]
-                interactions.append(interaction.unsqueeze(1))
-        
-        if interactions:
-            interaction_features = torch.cat(interactions, dim=1)
-            x_with_interactions = torch.cat([x, interaction_features], dim=1)
-        else:
-            x_with_interactions = x
-        
-        return x_with_interactions
+        b = m.shape[0]
+        inter = torch.zeros(b, self.output_dim, device=m.device)
+        for dd in range(self.output_dim):
+            # (p, p*L) @ (p*L, b) -> (p, b)：每个缺失特征 j 对应的加权和
+            Aj = A_flat[..., dd]  # (p, p*L)
+            weighted = (Aj.unsqueeze(1) * Hf.unsqueeze(0)).sum(-1)  # (p, b)
+            # Σ_j m[b,j] * weighted[j,b]
+            inter[:, dd] = torch.einsum('bj,jb->b', m, weighted)
+        return inter
     
     def get_feature_importance(self):
         """
-        Get feature importance scores
+        特征重要度：主效应系数 B 的 L2 范数（按特征聚合）
         
         Returns:
-            Feature importance scores
+            np.ndarray, 形状 (p,)
         """
         with torch.no_grad():
-            # Calculate importance based on weight magnitudes
-            weights = self.predict.weight
-            importance = torch.norm(weights, dim=0)
-            
-            # Reshape to match original features
-            feature_importance = torch.zeros(self.input_dim, device=self.device)
-            
-            for i in range(self.input_dim):
-                start_idx = i * self.spline_dim
-                end_idx = start_idx + self.spline_dim
-                feature_importance[i] = importance[start_idx:end_idx].sum()
-            
-            return feature_importance.cpu().numpy()
+            # B: (p, L, d) -> 按特征聚合
+            importance = torch.norm(self.B, p=2, dim=(1, 2))
+            return importance.cpu().numpy()
     
     def get_missing_indicators(self):
         """
-        Get missing value indicators
+        缺失指示效应 β_j^miss（按特征聚合到均值）
         
         Returns:
-            Missing value indicators
+            np.ndarray, 形状 (p,)
         """
-        return self.missing_indicators.detach().cpu().numpy()
+        with torch.no_grad():
+            return self.beta_miss.mean(dim=1).detach().cpu().numpy()
     
     def get_interaction_weights(self):
         """
-        Get feature interaction weights
+        缺失交互权重 α
         
         Returns:
-            Interaction weights
+            np.ndarray, 形状 (p, p, L, d)
         """
-        return self.interaction_weights.detach().cpu().numpy()
+        if self.A is None:
+            return np.zeros((self.input_dim, self.input_dim, self.n_knots, self.output_dim))
+        return self.A.detach().cpu().numpy()
     
-    def compute_regularization_loss(self, regularization_type='group_lasso'):
+    def compute_regularization_loss(self, regularization_type='l2'):
         """
-        Compute regularization loss
+        正则项计算（论文 Eq.2：λ1‖w‖₂² + λ2‖w‖₀）
         
         Args:
-            regularization_type: Type of regularization
-            
+            regularization_type: 'l2' | 'l0' | 'l1' | 'group_lasso'
+        
         Returns:
-            Regularization loss
+            正则损失标量张量
         """
-        if regularization_type == 'group_lasso':
-            # Group Lasso regularization on feature groups
-            weights = self.predict.weight
-            total_dim = weights.shape[1]
-            spline_dim = self.spline_dim
-            
-            reg_loss = 0.0
-            for i in range(0, total_dim, spline_dim):
-                group_weights = weights[:, i:i+spline_dim]
-                reg_loss += torch.norm(group_weights, p=2)
-            
-            return reg_loss
+        params = [self.B, self.beta0]
+        if self.A is not None:
+            params.append(self.A)
+        
+        if regularization_type == 'l2':
+            # ‖w‖₂²（对应 λ1 项）
+            reg = torch.tensor(0.0, device=self.device)
+            for pw in params:
+                reg = reg + torch.sum(pw ** 2)
+            return reg
+        
+        elif regularization_type == 'l0':
+            # ‖w‖₀ 的可微替代：Σ (1 - exp(-w²))（对应 λ2 项，促进稀疏）
+            reg = torch.tensor(0.0, device=self.device)
+            for pw in params:
+                reg = reg + torch.sum(1.0 - torch.exp(-pw ** 2))
+            return reg
         
         elif regularization_type == 'l1':
-            # L1 regularization
-            return torch.norm(self.predict.weight, p=1)
+            reg = torch.tensor(0.0, device=self.device)
+            for pw in params:
+                reg = reg + torch.norm(pw, p=1)
+            return reg
         
-        elif regularization_type == 'l2':
-            # L2 regularization
-            return torch.norm(self.predict.weight, p=2)
+        elif regularization_type == 'group_lasso':
+            # 按特征分组的 group lasso：每个特征的 (L, d) 系数组
+            reg = torch.tensor(0.0, device=self.device)
+            for j in range(self.input_dim):
+                reg = reg + torch.norm(self.B[j], p=2)
+            return reg
         
         else:
             return torch.tensor(0.0, device=self.device)
     
+    def get_penalty(self):
+        """
+        论文 Eq.2 的完整正则项：λ1‖w‖₂² + λ2‖w‖₀
+        """
+        lambda_l2 = getattr(self.config, 'lambda_l2', 1e-3)
+        lambda_l0 = getattr(self.config, 'lambda_l0', 1e-4)
+        return lambda_l2 * self.compute_regularization_loss('l2') + \
+               lambda_l0 * self.compute_regularization_loss('l0')
+    
     def get_model_interpretation(self, x_sample):
         """
-        Get model interpretation for a sample
+        单样本解释：各特征贡献、缺失效应、交互权重
         
         Args:
-            x_sample: Input sample
-            
+            x_sample: 输入样本，形状 (1, p) 或 (p,)
+        
         Returns:
-            Dictionary with interpretation results
+            解释字典
         """
         with torch.no_grad():
-            # Get feature contributions
-            x_spline = self._apply_spline_transformation(x_sample)
-            contributions = x_spline * self.predict.weight[0]
+            if x_sample.dim() == 1:
+                x_sample = x_sample.unsqueeze(0)
             
-            # Reshape contributions by feature
-            feature_contributions = torch.zeros(self.input_dim, device=self.device)
-            for i in range(self.input_dim):
-                start_idx = i * self.spline_dim
-                end_idx = start_idx + self.spline_dim
-                feature_contributions[i] = contributions[0, start_idx:end_idx].sum()
+            x_s = x_sample.to(self.device)
+            m = torch.isnan(x_s).float()
+            xf = torch.nan_to_num(x_s, nan=0.0)
+            H = self._compute_hinge_basis(xf) * (1.0 - m).unsqueeze(-1)
+            
+            # 特征贡献：Σ_τ β_{j,τ} h(x_j; η_τ)，形状 (p, d)
+            contrib = torch.einsum('bpl,pld->pd', H, self.B)
+            feature_contributions = contrib.mean(dim=1).cpu().numpy()
+            
+            prediction = self.forward(x_s)
             
             interpretation = {
-                'feature_contributions': feature_contributions.cpu().numpy(),
+                'feature_contributions': feature_contributions,
                 'missing_indicators': self.get_missing_indicators(),
                 'interaction_weights': self.get_interaction_weights(),
-                'prediction': self.forward(x_sample).cpu().numpy()
+                'prediction': prediction.cpu().numpy()
             }
-            
             return interpretation

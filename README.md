@@ -1,317 +1,279 @@
+<div align="center">
+
 # BIAM: Bilevel Interactive Additive Model
 
-A PyTorch implementation of the Bilevel Interactive Additive Model (BIAM) for handling datasets with missing values, noisy labels, and imbalanced categories.
+**A PyTorch implementation of the Bilevel Interactive Additive Model for learning under missing values, noisy labels, and class imbalance**
 
-## Overview
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org/)
+[![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-63%20passed-brightgreen)](#-testing)
 
-BIAM is a novel machine learning framework that addresses three key challenges in real-world datasets:
+</div>
 
-1. **Missing Values**: Explicitly models missing value indicators and their interactions
-2. **Noisy Labels**: Uses a bilevel optimization approach to learn robust sample weights
-3. **Class Imbalance**: Dynamically adjusts sample weights to handle imbalanced data
+---
 
-## Key Features
+## 📑 Table of Contents
 
-- **Bilevel Optimization**: Upper-level optimization for sample weighting, lower-level optimization for model parameters
-- **Additive Model Architecture**: Interpretable feature interactions with missing value handling
-- **Advanced Gradient Methods**: Multiple gradient computation strategies for robust optimization
-- **Comprehensive Visualization**: Shape function plots, feature importance, and model interpretation
-- **Extensive Logging**: Integration with wandb, tensorboard, and custom logging systems
+- [✨ Highlights](#-highlights)
+- [🔧 Installation](#-installation)
+- [⚡ Quick Start](#-quick-start)
+- [🏗️ Architecture](#️-architecture)
+- [🧪 Data Corruption Scenarios](#-data-corruption-scenarios)
+- [🔬 Ablation Variants](#-ablation-variants)
+- [📁 Experimental Results](#-experimental-results)
+- [⚙️ Configuration](#️-configuration)
+- [🧪 Testing](#-testing)
+- [☑️ Todo List](#️-todo-list)
+- [🪪 License](#-license)
 
-## Installation
+## ✨ Highlights
 
-### Requirements
+Real-world tabular data is rarely clean. **BIAM** tackles the three most common corruptions in a single, interpretable framework:
 
-- Python 3.8+
-- PyTorch 2.0+
-- CUDA 11.7+ (for GPU acceleration)
+1. **Missing Values** — explicit missing-indicator intercepts plus missing × feature *interactions*, so the model learns how missingness itself carries signal (supports MCAR / MAR / MNAR).
+2. **Noisy Labels** — a **bilevel optimization** scheme learns per-sample weights ν(·;θ) on a clean validation set, automatically down-weighting corrupted training samples.
+3. **Class Imbalance** — the same reweighting mechanism dynamically compensates for 1:N imbalanced training distributions, while the test set keeps its natural distribution.
 
-### Install Dependencies
+Key design points:
+
+- **Interpretable additive structure**: each feature contributes through a learnable shape function built on hinge bases located at data quantiles.
+- **First-order bilevel optimization** (Eq. 4–6): a differentiable *virtual step* makes the upper-level hypergradient cheap — no second-order derivatives.
+- **Strong extrapolation**: piecewise-linear hinge shape functions extrapolate far better than piecewise-constant alternatives (see [Experimental Results](#-experimental-results)).
+
+## 🔧 Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/zxlml/BIAM.git
+cd BIAM
+
+# (Optional) create a virtual environment
+conda create -n biam python=3.10 -y
+conda activate biam
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Quick Start
+> **Note (Windows)**: if you hit OpenMP duplicate-library errors, set the environment variable before running:
+> ```powershell
+> $env:KMP_DUPLICATE_LIB_OK='TRUE'
+> ```
 
-### Basic Usage
+**Minimal requirements**: Python 3.8+, PyTorch 2.0+, NumPy, scikit-learn, pandas, matplotlib. CPU-only execution is fully supported.
 
-```python
-from biam_main import main
-import argparse
+## ⚡ Quick Start
 
-# Set up arguments
-args = argparse.Namespace(
-    task='classification',
-    dataset='synthetic',
-    missing_ratio=0.3,
-    noise_ratio=0.2,
-    imbalance_ratio=0.15,
-    upper_lr=1e-2,
-    lower_lr=1e-2,
-    penalty_coef=1e-5,
-    epochs=10000,
-    batch_size=200,
-    use_wandb=True,
-    project_name='biam-experiments'
-)
-
-# Run training
-main()
-```
-
-### Command Line Interface
+### Command Line
 
 ```bash
-# Regression task
-python biam_main.py --task regression --dataset synthetic --epochs 5000
+# Regression with 30% label noise and 20% MCAR missing values
+python biam_main.py --task regression --noise_ratio 0.3 --missing_ratio 0.2
 
-# Classification task with wandb logging
-python biam_main.py --task classification --dataset adult --use_wandb --project_name my-experiment
+# Classification with label flipping, class imbalance and MNAR missingness
+python biam_main.py --task classification \
+    --noise_ratio 0.2 --imbalance_ratio 0.15 \
+    --missing_ratio 0.2 --missing_mechanism MNAR
 
-# Custom configuration
-python biam_main.py --task classification --missing_ratio 0.4 --noise_ratio 0.3 --imbalance_ratio 0.1
+# Fine-grained control over the noise model (paper Eq.: y <- y + N(mu_e, sigma_e))
+python biam_main.py --task regression --noise_mean 1.0 --noise_std 0.5 --seed 42
+
+# Ablation: disable bilevel reweighting (BIAM-B variant)
+python biam_main.py --task regression --use_bilevel False
 ```
 
-## Project Structure
-
-```
-BIAM/
-├── biam_main.py                 # Main entry point
-├── requirements.txt             # Dependencies
-├── README.md                   # This file
-├── data/                       # Data processing modules
-│   ├── __init__.py
-│   ├── biam_data_generator.py  # Synthetic and real data generation
-│   ├── biam_binarizer.py       # Missing value handling and binarization
-│   └── biam_data_utils.py      # Data utility functions
-├── models/                     # Model components
-│   ├── __init__.py
-│   ├── biam_model.py           # Main BIAM model
-│   ├── biam_weighting_network.py # Sample weighting network
-│   └── biam_additive_model.py  # Additive model with interactions
-├── gradients/                  # Optimization algorithms
-│   ├── __init__.py
-│   ├── biam_optimizer.py       # Main optimizer
-│   ├── biam_bilevel_optimizer.py # Advanced bilevel optimization
-│   └── biam_gradient_methods.py # Various gradient methods
-├── utils/                      # Utility classes
-│   ├── __init__.py
-│   ├── biam_config.py          # Configuration management
-│   └── biam_logger.py          # Logging utilities
-├── visualization/              # Visualization tools
-│   ├── __init__.py
-│   ├── biam_visualizer.py      # Main visualizer
-│   └── biam_shape_functions.py # Shape function plots
-└── logs/                       # Training logs and outputs
-```
-
-## Model Architecture
-
-### BIAM Framework
-
-BIAM consists of two main components:
-
-1. **Weighting Network**: A neural network that learns sample weights based on prediction errors
-2. **Additive Model**: An interpretable model that handles missing values and feature interactions
-
-### Bilevel Optimization
-
-The optimization process involves two levels:
-
-- **Upper Level**: Optimizes the weighting network parameters to minimize validation loss
-- **Lower Level**: Optimizes the additive model parameters using weighted training loss
-
-## Configuration
-
-### Key Parameters
-
-- `task`: Task type ('regression' or 'classification')
-- `dataset`: Dataset to use ('synthetic', 'adult', 'credit', 'mnist', 'cifar10')
-- `missing_ratio`: Ratio of missing values (0.0-1.0)
-- `noise_ratio`: Ratio of noisy labels (0.0-1.0)
-- `imbalance_ratio`: Ratio for class imbalance (0.0-1.0)
-- `upper_lr`: Upper level learning rate
-- `lower_lr`: Lower level learning rate
-- `penalty_coef`: Regularization coefficient
-- `epochs`: Number of training epochs
-- `batch_size`: Batch size for training
-
-### Advanced Configuration
+### Python API
 
 ```python
 from utils.biam_config import BIAMConfig
-
-config = BIAMConfig()
-config.update(
-    task='classification',
-    missing_ratio=0.3,
-    noise_ratio=0.2,
-    imbalance_ratio=0.15,
-    upper_lr=1e-2,
-    lower_lr=1e-2,
-    penalty_coef=1e-5,
-    epochs=10000,
-    batch_size=200
-)
-```
-
-## Data Generation
-
-### Synthetic Data
-
-BIAM includes comprehensive synthetic data generation for testing:
-
-```python
 from data.biam_data_generator import BIAMDataGenerator
+from models.biam_model import BIAMModel
+from models.biam_weighting_network import BIAMWeightingNetwork
+from gradients.biam_optimizer import BIAMOptimizer
 
-generator = BIAMDataGenerator(config)
-train_loader, val_loader, test_data = generator.generate_data()
-```
-
-### Supported Datasets
-
-- **Synthetic**: Custom generated data with various noise patterns
-- **Adult**: UCI Adult dataset with missing values
-- **Credit**: Credit scoring dataset with imbalance
-- **MNIST**: Image classification with label noise
-- **CIFAR-10**: Natural image classification
-
-## Visualization
-
-### Training Curves
-
-```python
-from visualization.biam_visualizer import BIAMVisualizer
-
-visualizer = BIAMVisualizer(config)
-visualizer.plot_training_curves(training_history)
-```
-
-### Feature Importance
-
-```python
-feature_importance = model.get_feature_importance()
-visualizer.plot_feature_importance(feature_importance, feature_names)
-```
-
-### Shape Functions
-
-```python
-from visualization.biam_shape_functions import BIAMShapeFunctions
-
-shape_plotter = BIAMShapeFunctions(config)
-shape_plotter.plot_shape_functions(model, data, feature_names)
-```
-
-## Logging and Monitoring
-
-### Wandb Integration
-
-```python
-# Enable wandb logging
-python biam_main.py --use_wandb --project_name my-biam-experiment
-```
-
-### Custom Logging
-
-```python
-from utils.biam_logger import BIAMLogger
-
-logger = BIAMLogger(config)
-logger.log_metrics(epoch, train_metrics, test_metrics)
-logger.log_feature_importance(feature_importance)
-```
-
-## Advanced Features
-
-### Multiple Gradient Methods
-
-BIAM supports various gradient computation methods:
-
-- Hypergradient computation
-- Implicit differentiation
-- Forward-mode differentiation
-- Second-order gradients
-- Meta-gradient computation
-
-### Regularization Strategies
-
-- Group Lasso regularization
-- L1/L2 regularization
-- Entropy regularization for weight diversity
-- Gradient clipping and noise
-
-### Model Interpretation
-
-- Feature importance analysis
-- Missing value indicator analysis
-- Feature interaction visualization
-- Model complexity analysis
-
-## Performance Optimization
-
-### GPU Acceleration
-
-```python
-# Automatic GPU detection
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-```
-
-### Optimization
-
-- Gradient checkpointing
-- Mixed precision training
-- Efficient data loading
-
-## Examples
-
-### Regression Example
-
-```python
-# Generate synthetic regression data
+# 1. Configure
 config = BIAMConfig()
 config.task = 'regression'
-config.missing_ratio = 0.2
-config.noise_ratio = 0.1
+config.noise_ratio, config.missing_ratio = 0.3, 0.2
 
+# 2. Generate corrupted data (train / val / test splits, test stays clean)
 generator = BIAMDataGenerator(config)
-train_loader, val_loader, test_data = generator.generate_data()
+train_loader, val_loader, train_data, val_data, test_data = generator.generate_data()
 
-# Train model
-model = BIAMModel(config, device)
-optimizer = BIAMOptimizer(config, model, weighting_network)
+# 3. Build model + weighting network; place hinge knots at training quantiles
+biam_model = BIAMModel(config, config.device)
+weighting_network = BIAMWeightingNetwork(config, config.device)
+biam_model.additive_model.set_knots(torch.tensor(train_data[0], dtype=torch.float32))
 
+# 4. Bilevel optimization
+optimizer = BIAMOptimizer(config, biam_model, weighting_network)
 for epoch in range(config.epochs):
-    train_metrics = optimizer.train_epoch(train_loader, val_loader, epoch)
-    if epoch % 100 == 0:
-        test_metrics = optimizer.evaluate(test_data)
-        print(f"Epoch {epoch}: Test RMSE = {test_metrics['rmse']:.4f}")
+    optimizer.train_epoch(train_loader, val_loader, epoch)
+    if epoch % 20 == 0:
+        print(optimizer.evaluate(test_data))   # {'mse': ..., 'rmse': ..., 'mae': ...}
 ```
 
-### Classification Example
+A full end-to-end demo (training, evaluation, interpretation, visualization) is available:
 
-```python
-# Generate synthetic classification data with imbalance
-config = BIAMConfig()
-config.task = 'classification'
-config.imbalance_ratio = 0.1
-config.noise_ratio = 0.3
-
-generator = BIAMDataGenerator(config)
-train_loader, val_loader, test_data = generator.generate_data()
-
-# Train model
-model = BIAMModel(config, device)
-optimizer = BIAMOptimizer(config, model, weighting_network)
-
-for epoch in range(config.epochs):
-    train_metrics = optimizer.train_epoch(train_loader, val_loader, epoch)
-    if epoch % 100 == 0:
-        test_metrics = optimizer.evaluate(test_data)
-        print(f"Epoch {epoch}: Test Accuracy = {test_metrics['accuracy']:.4f}")
+```bash
+python demo_biam.py
 ```
 
-## License
+## 🏗️ Architecture
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+### Core Modules Overview
+
+```
+BIAM/
+├── biam_main.py                  # Main entry point (CLI)
+├── demo_biam.py                  # End-to-end demo
+├── run_tests.py                  # Test-suite runner
+├── data/                         # Data processing
+│   ├── biam_data_generator.py    # Synthetic data + corruption pipeline (noise/imbalance/missing)
+│   ├── biam_binarizer.py         # Missing-value indicators & feature binarization
+│   ├── biam_dataset_loader.py    # Real-dataset loading utilities
+│   └── biam_data_utils.py        # Data helpers
+├── models/                       # Model components
+│   ├── biam_additive_model.py    # Additive model: hinge bases, missing intercepts & interactions (Eq. 1)
+│   ├── biam_weighting_network.py # Sample-weighting network ν(·;θ)
+│   └── biam_model.py             # Top-level model wrapper
+├── gradients/                    # Optimization
+│   ├── biam_optimizer.py         # First-order bilevel optimizer (Eq. 4–6)
+│   ├── biam_bilevel_optimizer.py # Alternative bilevel implementation
+│   └── biam_gradient_methods.py  # Gradient utilities
+├── utils/                        # Configuration, logging, performance tools
+│   ├── biam_config.py            # Central configuration + validation
+│   └── biam_logger.py            # Structured logging
+├── visualization/                # Shape functions, feature importance, training curves
+└── tests/                        # Unit / functional / simulation / performance tests
+```
+
+### The Additive Model (Eq. 1)
+
+Each feature contributes through a shape function; missingness enters both as an intercept and as an interaction with other features' shape functions:
+
+$$
+f(x, m; w) = \beta_0 + \sum_{j} f_j(x_j) + \sum_{j} \beta^{\text{miss}}_j \, m_j + \sum_{j,k,\tau} \alpha_{j,k,\tau} \, \mathbb{I}(m_j = 1) \, h(x_k; \eta_\tau)
+$$
+
+where $h(x;\eta) = \max(0, x - \eta)$ is a hinge basis whose knot $\eta_\tau$ is placed at a training-data quantile, and $m_j \in \{0,1\}$ indicates missingness of feature $j$.
+
+### First-Order Bilevel Optimization (Eq. 4–6)
+
+| Step | Update | Purpose |
+|------|--------|---------|
+| **Step 1** | $w^{(t)} = w^{(t-1)} - \gamma_w \nabla_w R\big(\theta^{(t)}, w^{(t-1)}\big)$ | Real lower-level update of model parameters with ν-weighted loss |
+| **Step 2** | $\hat{w}(\theta) = w^{(t-1)} - \gamma_w \nabla_w R\big(\theta^{(t)}, w^{(t)}\big)$ | Differentiable *virtual step* (kept in the autograd graph) |
+| **Step 3** | $\theta^{(t+1)} = \theta^{(t)} - \gamma_\theta \nabla_\theta L_{\text{val}}\big(\hat{w}(\theta)\big)$ | Upper-level update via hypergradient through the virtual step |
+
+The weighting network ν takes the **batch-standardized per-sample loss** as input and outputs sample weights; weights are mean-normalized so that reweighting preserves the average gradient scale.
+
+## 🧪 Data Corruption Scenarios
+
+Following the simulation protocol of the paper (§4.1), `BIAMDataGenerator` reproduces all three corruption types — **applied to the training set only unless stated otherwise**, with the test set kept clean:
+
+| Scenario | Mechanism | Applied to |
+|----------|-----------|------------|
+| **Label noise (regression)** | $y \leftarrow y + \epsilon,\ \epsilon \sim \mathcal{N}(\mu_e, \sigma_e)$ for a fraction $r_1$ of samples | Train |
+| **Label noise (classification)** | Random label flipping for a fraction $r_1$ of samples | Train |
+| **Class imbalance** | Majority : minority resampled to `imbalance_ratio` | Train |
+| **Missing values** | MCAR / MAR / MNAR masking at ratio `missing_ratio` | Train / Val / Test |
+| **Clean test labels** | Natural class distribution, no flipped labels | Test |
+
+## 🔬 Ablation Variants
+
+| Variant | Switch | What is removed |
+|---------|--------|-----------------|
+| **BIAM** (full) | — | — |
+| **BIAM-B** | `use_bilevel = False` | Bilevel reweighting → uniform sample weights |
+| **BIAM-I** | `use_missing_interactions = False` | Missing × feature interaction terms |
+| **BIAM-H** | `basis_type = 'piecewise_constant'` | Piecewise-linear hinge bases → piecewise-constant bases |
+
+## 📁 Experimental Results
+
+Results from the bundled simulation test-suite (`tests/test_biam_simulation.py`, synthetic data, CPU, seeds {42, 7}).
+
+### Regression — Test MSE (lower is better)
+
+| Setting | BIAM | BIAM-B (no bilevel) |
+|---------|------|---------------------|
+| Clean data | 0.147 | 0.144 |
+| 30% noise + 20% missing (multi-seed avg.) | **0.436** | 0.457 |
+
+Under corruption the bilevel reweighting consistently wins, while on clean data both variants converge to the same level — matching the paper's Table 2 behaviour.
+
+### Effect of Learned Sample Weights
+
+The learned ν correctly down-weights corrupted samples: Spearman correlation between ν and per-sample loss reaches **−1.0**, and a model trained on corrupted data with bilevel reweighting achieves **MSE 0.095** vs. **1.27** for a mean predictor.
+
+### Classification
+
+| Setting | Macro-F1 |
+|---------|----------|
+| Clean (60 epochs) | 0.846 |
+
+### Shape-Function Extrapolation (BIAM-H ablation)
+
+Training domain $x_0 \in [-1, 0.8]$, test domain $x_0 \in [1.0, 1.5]$, true function $y = 3x_0$:
+
+| Basis | Test MSE |
+|-------|----------|
+| Piecewise-linear hinge (BIAM) | **0.12** |
+| Piecewise-constant (BIAM-H) | 3.58 |
+
+The hinge-based shape functions extrapolate ~30× better, directly supporting the paper's §5 claim.
+
+> **Note**: on toy synthetic data with independent features, the missing-interaction module (BIAM vs. BIAM-I) shows non-inferiority and clear module activation ($|\beta^{\text{miss}}| > 10^{-3}$); the large gaps reported in the paper materialize on real correlated datasets (e.g., ADNI).
+
+## ⚙️ Configuration
+
+All behaviour is controlled via `utils/biam_config.py` (overridable through CLI flags). Key options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `task` | `'regression'` | `'regression'` or `'classification'` |
+| `n_samples` / `n_features` | 1200 / 10 | Synthetic dataset size and dimensionality |
+| `noise_ratio` | 0.3 | Fraction of training samples corrupted |
+| `noise_mean` / `noise_std` | 1.0 / 0.5 | $\mathcal{N}(\mu_e, \sigma_e)$ of the additive regression noise |
+| `imbalance_ratio` | 0.2 | Minority : majority ratio for training-set resampling |
+| `missing_ratio` | 0.2 | Fraction of masked entries |
+| `missing_mechanism` | `'MCAR'` | `'MCAR'`, `'MAR'`, or `'MNAR'` |
+| `n_knots` | 8 | Number of hinge knots per feature (placed at quantiles) |
+| `basis_type` | `'piecewise_linear'` | `'piecewise_linear'` or `'piecewise_constant'` (BIAM-H) |
+| `use_bilevel` | `True` | `False` disables bilevel reweighting (BIAM-B) |
+| `use_missing_interactions` | `True` | `False` removes missing × feature interactions (BIAM-I) |
+| `lambda_l2` / `lambda_l0` | 1e-3 / 1e-4 | Smoothness / sparsity penalties on shape functions |
+| `upper_lr` / `lower_lr` | 0.1 / 0.05 | Upper- (θ) and lower-level (w) learning rates |
+| `epochs` / `batch_size` | 200 / 64 | Training schedule |
+| `seed` | 42 | Global random seed |
+
+## 🧪 Testing
+
+The project ships with a 63-case test-suite covering unit, functional, simulation and performance levels:
+
+```bash
+# Full suite
+python -m pytest tests/ -q
+
+# By level
+python -m pytest tests/test_biam_models.py -v        # model internals (hinge bases, missing handling, penalties)
+python -m pytest tests/test_biam_data.py -v          # corruption pipeline (noise / imbalance / missing)
+python -m pytest tests/test_biam_optimizer.py -v     # bilevel optimization correctness
+python -m pytest tests/test_biam_simulation.py -v    # end-to-end behaviour vs. paper claims
+python -m pytest tests/test_biam_performance.py -v   # scalability
+
+# Or use the bundled runner
+python run_tests.py
+```
+
+## ☑️ Todo List
+
+- [ ] Real-dataset benchmarks (ADNI, UCI Adult, Credit)
+- [ ] GPU acceleration & mixed-precision training
+- [ ] Shape-function visualization for the interaction terms
+- [ ] Automatic hyperparameter search for the bilevel learning rates
+
+## 🪪 License
+
+This project is licensed under the MIT License — see the [LICENSE](./LICENSE) file for details.

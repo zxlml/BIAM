@@ -205,15 +205,9 @@ class BIAMBilevelOptimizer:
         for param in self.lower_model.parameters():
             reg_loss += torch.norm(param, p=2)
         
-        # Group Lasso regularization on feature groups
-        if hasattr(self.lower_model, 'predict'):
-            weights = self.lower_model.predict.weight
-            total_dim = weights.shape[1]
-            spline_dim = self.config.get_spline_dim()
-            
-            for i in range(0, total_dim, spline_dim):
-                group_weights = weights[:, i:i+spline_dim]
-                reg_loss += torch.norm(group_weights, p=2)
+        # 新加性模型使用其内置正则（含 group lasso / 主效应分组）
+        if hasattr(self.lower_model, 'compute_regularization_loss'):
+            reg_loss += self.lower_model.compute_regularization_loss('group_lasso')
         
         return reg_loss
     
