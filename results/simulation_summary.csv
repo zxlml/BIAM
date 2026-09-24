@@ -1,0 +1,19 @@
+﻿experiment,scenario,variant,seed,mse,rmse,mae,f1_macro,accuracy,spearman_nu_vs_loss,mean_predictor_mse,note
+regression,clean,BIAM,42,0.1324,0.3639,0.2802,nan,nan,,,双层加权
+regression,clean,BIAM-B,42,0.1137,0.3372,0.2813,nan,nan,,,均匀权重
+regression,noise30_missing20,BIAM,42,0.4293,0.6552,0.5195,nan,nan,,,双层加权
+regression,noise30_missing20,BIAM-B,42,0.4417,0.6646,0.523,nan,nan,,,均匀权重
+regression,noise30_missing20,BIAM,7,0.4416,0.6646,0.5229,nan,nan,,,双层加权
+regression,noise30_missing20,BIAM-B,7,0.4726,0.6875,0.5536,nan,nan,,,均匀权重
+regression,noise30_missing20,BIAM,mean,0.4355,,,,,,,多种子平均（论文 Table 2 核心行为：BIAM < BIAM-B）
+regression,noise30_missing20,BIAM-B,mean,0.4572,,,,,,,多种子平均（论文 Table 2 核心行为：BIAM < BIAM-B）
+classification,clean,BIAM,42,nan,nan,nan,0.8669,0.9062,,,Table 3 干净基线行为
+classification,combined_corruption,BIAM,42,nan,nan,nan,0.5386,0.7688,,,双层加权
+classification,combined_corruption,BIAM-B,42,nan,nan,nan,0.5176,0.7625,,,均匀权重
+biam_h_extrapolation,domain_shift,BIAM(hinge),42,0.03,0.1731,0.1711,nan,nan,,,"y=3*x0, 训练域[-1,0.8], 测试域[1.0,1.5]（纯外推）"
+biam_h_extrapolation,domain_shift,BIAM-H(constant),42,3.4166,1.8484,1.8007,nan,nan,,,"y=3*x0, 训练域[-1,0.8], 测试域[1.0,1.5]（纯外推）"
+biam_h_extrapolation,domain_shift,BIAM(hinge),7,0.2108,0.4591,0.4571,nan,nan,,,"y=3*x0, 训练域[-1,0.8], 测试域[1.0,1.5]（纯外推）"
+biam_h_extrapolation,domain_shift,BIAM-H(constant),7,3.747,1.9357,1.8881,nan,nan,,,"y=3*x0, 训练域[-1,0.8], 测试域[1.0,1.5]（纯外推）"
+biam_i_missing_module,MNAR_missing25,BIAM,42,0.4346,0.6593,0.537,nan,nan,,,β_miss 平均幅值=0.1086（缺失模块激活）
+biam_i_missing_module,MNAR_missing25,BIAM-I,42,0.2805,0.5296,0.4266,nan,nan,,,移除缺失交互（预测非劣性成立）
+bilevel_reweighting,noise30,BIAM,42,0.0763,0.2762,0.2243,nan,nan,-1.0,1.2693,ν 与逐样本损失的 Spearman 相关（负值=降权高损失样本）
