@@ -23,7 +23,6 @@
 - [🏗️ Architecture](#️-architecture)
 - [🧪 Data Corruption Scenarios](#-data-corruption-scenarios)
 - [🔬 Ablation Variants](#-ablation-variants)
-- [📁 Experimental Results](#-experimental-results)
 - [⚙️ Configuration](#️-configuration)
 - [🧪 Testing](#-testing)
 - [☑️ Todo List](#️-todo-list)
@@ -41,7 +40,7 @@ Key design points:
 
 - **Interpretable additive structure**: each feature contributes through a learnable shape function built on hinge bases located at data quantiles.
 - **First-order bilevel optimization** (Eq. 4–6): a differentiable *virtual step* makes the upper-level hypergradient cheap — no second-order derivatives.
-- **Strong extrapolation**: piecewise-linear hinge shape functions extrapolate far better than piecewise-constant alternatives (see [Experimental Results](#-experimental-results)).
+- **Strong extrapolation**: piecewise-linear hinge shape functions extrapolate far better than piecewise-constant alternatives.
 
 ## 🔧 Installation
 
@@ -191,42 +190,6 @@ Following the simulation protocol of the paper (§4.1), `BIAMDataGenerator` repr
 | **BIAM-B** | `use_bilevel = False` | Bilevel reweighting → uniform sample weights |
 | **BIAM-I** | `use_missing_interactions = False` | Missing × feature interaction terms |
 | **BIAM-H** | `basis_type = 'piecewise_constant'` | Piecewise-linear hinge bases → piecewise-constant bases |
-
-## 📁 Experimental Results
-
-Results from the bundled simulation test-suite (`tests/test_biam_simulation.py`, synthetic data, CPU, seeds {42, 7}).
-
-### Regression — Test MSE (lower is better)
-
-| Setting | BIAM | BIAM-B (no bilevel) |
-|---------|------|---------------------|
-| Clean data | 0.147 | 0.144 |
-| 30% noise + 20% missing (multi-seed avg.) | **0.436** | 0.457 |
-
-Under corruption the bilevel reweighting consistently wins, while on clean data both variants converge to the same level — matching the paper's Table 2 behaviour.
-
-### Effect of Learned Sample Weights
-
-The learned ν correctly down-weights corrupted samples: Spearman correlation between ν and per-sample loss reaches **−1.0**, and a model trained on corrupted data with bilevel reweighting achieves **MSE 0.095** vs. **1.27** for a mean predictor.
-
-### Classification
-
-| Setting | Macro-F1 |
-|---------|----------|
-| Clean (60 epochs) | 0.846 |
-
-### Shape-Function Extrapolation (BIAM-H ablation)
-
-Training domain $x_0 \in [-1, 0.8]$, test domain $x_0 \in [1.0, 1.5]$, true function $y = 3x_0$:
-
-| Basis | Test MSE |
-|-------|----------|
-| Piecewise-linear hinge (BIAM) | **0.12** |
-| Piecewise-constant (BIAM-H) | 3.58 |
-
-The hinge-based shape functions extrapolate ~30× better, directly supporting the paper's §5 claim.
-
-> **Note**: on toy synthetic data with independent features, the missing-interaction module (BIAM vs. BIAM-I) shows non-inferiority and clear module activation ($|\beta^{\text{miss}}| > 10^{-3}$); the large gaps reported in the paper materialize on real correlated datasets (e.g., ADNI).
 
 ## ⚙️ Configuration
 
